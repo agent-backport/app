@@ -1,7 +1,9 @@
 import { sleep, FatalError } from "workflow";
 import { getInstallationOctokit } from "@/lib/github";
+import { updateJob, addJobLog } from "@/lib/jobs";
 
 export interface BackportParams {
+  jobId: string;
   installationId: number;
   repository: string;
   prNumber: number;
@@ -30,63 +32,97 @@ export async function backportPullRequest(
 ): Promise<BackportResult> {
   "use workflow";
 
-  const { installationId, repository, prNumber, targetBranch, commentId } =
+  const { jobId, installationId, repository, prNumber, targetBranch, commentId } =
     params;
 
-  // Step 1: Acknowledge the request
-  await acknowledgeRequest(installationId, repository, commentId);
+  try {
+    // Step 1: Acknowledge the request
+    await acknowledgeRequest(installationId, repository, commentId);
+    await addJobLog(jobId, "Request acknowledged");
 
-  // Step 2: Fetch PR details
-  const prDetails = await fetchPRDetails(installationId, repository, prNumber);
+    // Step 2: Fetch PR details
+    await addJobLog(jobId, "Fetching PR details...");
+    const prDetails = await fetchPRDetails(installationId, repository, prNumber);
+    await addJobLog(jobId, `PR title: ${prDetails.title}`);
+    await addJobLog(jobId, `Commits: ${prDetails.commits.length}`);
 
-  // Step 3: Validate target branch exists
-  await validateTargetBranch(installationId, repository, targetBranch);
+    // Step 3: Validate target branch exists
+    await addJobLog(jobId, `Validating target branch: ${targetBranch}`);
+    await validateTargetBranch(installationId, repository, targetBranch);
+    await addJobLog(jobId, "Target branch exists");
 
-  // Step 4: Analyze the changes (AI-powered)
-  const analysis = await analyzeChanges(prDetails, targetBranch);
+    // Step 4: Analyze the changes (AI-powered)
+    await addJobLog(jobId, "Analyzing changes...");
+    const analysis = await analyzeChanges(prDetails, targetBranch);
+    await addJobLog(jobId, `Analysis complete. Complexity: ${analysis.complexity}`);
 
-  // Step 5: Perform the backport in a sandbox
-  const backportResult = await performBackport(
-    installationId,
-    repository,
-    prDetails,
-    targetBranch,
-    analysis
-  );
-
-  // Step 6: Create result PR or report failure
-  if (backportResult.success) {
-    const resultPR = await createBackportPR(
+    // Step 5: Perform the backport in a sandbox
+    await addJobLog(jobId, "Performing backport in sandbox...");
+    const backportResult = await performBackport(
       installationId,
       repository,
-      prNumber,
+      prDetails,
       targetBranch,
-      backportResult.branch!
+      analysis
     );
 
-    await reportSuccess(
-      installationId,
-      repository,
-      prNumber,
-      resultPR,
-      targetBranch
-    );
+    // Step 6: Create result PR or report failure
+    if (backportResult.success) {
+      await addJobLog(jobId, "Backport successful, creating PR...");
+      const resultPR = await createBackportPR(
+        installationId,
+        repository,
+        prNumber,
+        targetBranch,
+        backportResult.branch!
+      );
 
-    return { success: true, resultPR };
-  } else {
-    await reportFailure(
-      installationId,
-      repository,
-      prNumber,
-      targetBranch,
-      backportResult.error!
-    );
+      await reportSuccess(
+        installationId,
+        repository,
+        prNumber,
+        resultPR,
+        targetBranch
+      );
 
-    return { success: false, error: backportResult.error };
+      await updateJob(jobId, {
+        status: "completed",
+        resultPR,
+      });
+      await addJobLog(jobId, `Backport PR created: #${resultPR}`);
+
+      return { success: true, resultPR };
+    } else {
+      await addJobLog(jobId, `Backport failed: ${backportResult.error}`);
+      await reportFailure(
+        installationId,
+        repository,
+        prNumber,
+        targetBranch,
+        backportResult.error!
+      );
+
+      await updateJob(jobId, {
+        status: "failed",
+        error: backportResult.error,
+      });
+
+      return { success: false, error: backportResult.error };
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    await addJobLog(jobId, `Workflow error: ${errorMessage}`);
+    await updateJob(jobId, {
+      status: "failed",
+      error: errorMessage,
+    });
+
+    // Re-throw to let workflow handle it
+    throw error;
   }
 }
 
-// Step implementations (stubs for now)
+// Step implementations
 
 async function acknowledgeRequest(
   installationId: number,
@@ -127,17 +163,29 @@ async function fetchPRDetails(
     pull_number: prNumber,
   });
 
+  // Also get the diff for AI analysis
+  const { data: diff } = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: prNumber,
+    mediaType: {
+      format: "diff",
+    },
+  });
+
   return {
     title: pr.title,
     body: pr.body,
     baseBranch: pr.base.ref,
     headBranch: pr.head.ref,
+    headSha: pr.head.sha,
     commits: commits.map((c) => ({
       sha: c.sha,
       message: c.commit.message,
     })),
     merged: pr.merged,
     mergeCommitSha: pr.merge_commit_sha,
+    diff: diff as unknown as string,
   };
 }
 
@@ -163,9 +211,13 @@ async function validateTargetBranch(
 
 async function analyzeChanges(prDetails: any, targetBranch: string) {
   "use step";
-  // TODO: Implement AI-powered analysis
+  // TODO: Implement AI-powered analysis in Phase 5
+  // For now, return a basic analysis
+  const filesChanged = (prDetails.diff?.match(/^diff --git/gm) || []).length;
+
   return {
-    complexity: "low",
+    complexity: filesChanged > 10 ? "high" : filesChanged > 3 ? "medium" : "low",
+    filesChanged,
     potentialConflicts: [],
     recommendations: [],
   };
@@ -179,10 +231,11 @@ async function performBackport(
   analysis: any
 ): Promise<{ success: boolean; branch?: string; error?: string }> {
   "use step";
-  // TODO: Implement sandbox-based git operations
+  // TODO: Implement sandbox-based git operations in Phase 6
+  // For now, return a placeholder error
   return {
     success: false,
-    error: "Backport execution not yet implemented",
+    error: "Backport execution not yet implemented (coming in Phase 6)",
   };
 }
 
@@ -220,6 +273,7 @@ async function reportSuccess(
   const octokit = await getInstallationOctokit(installationId);
   const [owner, repo] = repository.split("/");
 
+  // Add rocket reaction to original comment
   await octokit.rest.issues.createComment({
     owner,
     repo,
