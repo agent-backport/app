@@ -90,7 +90,18 @@ AI_GATEWAY_API_KEY=your_ai_gateway_key
 # NextAuth
 NEXTAUTH_SECRET=generate_a_random_string
 NEXTAUTH_URL=https://your-app.vercel.app
+
+# Upstash Redis (for job storage)
+UPSTASH_REDIS_REST_URL=your_upstash_redis_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_token
 ```
+
+### 3b. Set Up Upstash Redis
+
+1. Go to [Upstash Console](https://console.upstash.com/) or use the [Vercel Integration](https://vercel.com/integrations/upstash)
+2. Create a new Redis database
+3. Copy the **REST URL** and **REST Token** from your database details
+4. Add them to your environment variables
 
 ### 4. Install the GitHub App
 
